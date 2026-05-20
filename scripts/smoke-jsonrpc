@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT="${1:-/Users/andrewpullin/personal/nethack/hack80}"
+AGENT="$ROOT/scripts/jdtls-agent"
+DAEMON="$ROOT/scripts/jdtls-agentd"
+STARTED_DAEMON=""
+LOG="${TMPDIR:-/tmp}/jdtls-agent-smoke-daemon.log"
+
+is_up() {
+  local status
+  status="$($AGENT --project "$PROJECT" status --json)"
+  python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.stdin.read()).get("daemonUp") else 1)' <<<"$status"
+}
+
+if ! is_up; then
+  "$DAEMON" --project "$PROJECT" >"$LOG" 2>&1 &
+  STARTED_DAEMON="$!"
+  trap 'if [[ -n "$STARTED_DAEMON" ]]; then kill "$STARTED_DAEMON" 2>/dev/null || true; fi' EXIT
+  for _ in $(seq 1 60); do
+    if is_up; then
+      break
+    fi
+    sleep 1
+  done
+  if ! is_up; then
+    echo "jdtls-agentd did not become ready; daemon log: $LOG" >&2
+    exit 1
+  fi
+fi
+
+REQUESTS=$(cat <<'JSON'
+{"jsonrpc":"2.0","id":1,"method":"jdtlsAgent.status","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"jdtlsAgent.definition","params":{"query":"org.hack80.engine.movement.AppliedTools.buryAnObj"}}
+{"jsonrpc":"2.0","id":3,"method":"jdtlsAgent.references","params":{"query":"org.hack80.engine.movement.AppliedTools.buryAnObj","limit":3}}
+{"jsonrpc":"2.0","id":4,"method":"jdtlsAgent.field-writes","params":{"query":"org.hack80.engine.Obj.where","limit":5}}
+{"jsonrpc":"2.0","id":5,"method":"jdtlsAgent.api-surface","params":{"query":"org.hack80.engine.movement.AppliedTools","limit":3}}
+JSON
+)
+
+RESPONSES="$(printf '%s\n' "$REQUESTS" | "$AGENT" --project "$PROJECT" rpc)"
+printf '%s\n' "$RESPONSES" | python3 -c '
+import json, sys
+responses = [json.loads(line) for line in sys.stdin if line.strip()]
+assert [r.get("id") for r in responses] == [1, 2, 3, 4, 5], responses
+for response in responses:
+    assert "result" in response and response["result"].get("ok") is True, response
+by_id = {r["id"]: r["result"] for r in responses}
+assert by_id[1].get("daemonUp") is True, by_id[1]
+assert by_id[2]["location"]["line"] == 825, by_id[2]
+assert len(by_id[3]["results"]) >= 1, by_id[3]
+assert "results" in by_id[4], by_id[4]
+assert len(by_id[5]["results"]) >= 1, by_id[5]
+'
+
+echo "jdtls-agent JSON-RPC smoke passed for $PROJECT"

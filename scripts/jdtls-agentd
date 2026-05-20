@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+JAR="$ROOT/target/jdtls-agent-0.1.0-all.jar"
+
+if [[ ! -f "$JAR" ]]; then
+  echo "Missing $JAR; run: mvn -q -DskipTests package" >&2
+  exit 1
+fi
+
+if [[ -n "${JDTLS_AGENT_JAVA:-}" ]]; then
+  JAVA_BIN="$JDTLS_AGENT_JAVA"
+elif [[ -x /opt/homebrew/opt/openjdk@21/bin/java ]]; then
+  JAVA_BIN=/opt/homebrew/opt/openjdk@21/bin/java
+elif [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then
+  JAVA_BIN="$JAVA_HOME/bin/java"
+else
+  JAVA_BIN=java
+fi
+
+DAEMON_PID=""
+WATCHDOG_PID=""
+CLEANED_UP=0
+cleanup() {
+  if [[ "$CLEANED_UP" == 1 ]]; then
+    return
+  fi
+  CLEANED_UP=1
+  set +e
+  if [[ -n "$DAEMON_PID" ]]; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+  fi
+  "$JAVA_BIN" -jar "$JAR" cleanup "$@" >/dev/null 2>&1 || true
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+  fi
+}
+
+start_watchdog() {
+  local wrapper_pid="$$"
+  (
+    set +e
+    while true; do
+      if ! kill -0 "$wrapper_pid" 2>/dev/null; then
+        break
+      fi
+      state="$(ps -p "$wrapper_pid" -o stat= 2>/dev/null || true)"
+      case "$state" in
+        *Z*) break ;;
+      esac
+      sleep 1
+    done
+    "$JAVA_BIN" -jar "$JAR" cleanup "$@" >/dev/null 2>&1 || true
+  ) &
+  WATCHDOG_PID="$!"
+}
+
+trap 'cleanup "$@"' INT TERM HUP EXIT
+
+"$JAVA_BIN" -jar "$JAR" daemon "$@" &
+DAEMON_PID="$!"
+start_watchdog "$@"
+set +e
+wait "$DAEMON_PID"
+STATUS="$?"
+set -e
+trap - INT TERM HUP EXIT
+cleanup "$@"
+exit "$STATUS"
