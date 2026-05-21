@@ -19,6 +19,14 @@ elif [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then
 else
   JAVA_BIN=java
 fi
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h)
+      exec "$JAVA_BIN" -jar "$JAR" daemon "$@"
+      ;;
+  esac
+done
+
 
 DAEMON_PID=""
 WATCHDOG_PID=""

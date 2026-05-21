@@ -150,7 +150,7 @@ This version does not mutate hack80 source. JDTLS `workspace/applyEdit` requests
 
 - JDTLS still requires an Eclipse workspace internally. The daemon hides it under `.jdtls-agent/workspaces/`, but the dependency is real.
 - Hack80 is a plain Makefile Java project, so JDTLS creates an invisible project model from source roots. This works for the smoke queries, but project-model edge cases may appear.
-- Diagnostics are push-based; `diagnostics --file <path>` is more reliable than project-wide diagnostics immediately after startup.
+- Diagnostics are push-based and advisory for hack80's plain Makefile project model; use `diagnostics --file <path>` to open/reconcile a file first, and keep `make`/javac or IntelliJ as compile authority for surprising unresolved-symbol reports.
 - Call hierarchy is JDTLS/JDT based. Dynamic dispatch, generated content, or unusual translated code can still need human interpretation.
 - The local declaration index uses the JDK compiler parser for mapping symbol strings to source positions and for classifying field-write context; semantic answers come from JDTLS.
 - `field-writes` and `mutation-map` are semantically scoped by JDTLS references, then syntactically classify write context; unusual reflection or generated code still needs review.

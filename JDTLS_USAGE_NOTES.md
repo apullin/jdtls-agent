@@ -14,3 +14,4 @@ Current unresolved usage notes from live use against `hack80`. Delete items as t
 ## Remaining Issues / Improvements
 
 - Add an MCP adapter after the JSON-RPC command surface has more real usage.
+- Diagnostics can still be advisory in hack80's plain Makefile project model; keep `make`/javac or IntelliJ as compile authority if JDTLS reports surprising unresolved symbols.

@@ -21,6 +21,10 @@ final class AgentDaemon {
 
     static int run(String[] args) throws Exception {
         AgentOptions options = AgentOptions.parse(args);
+        if (!options.command.isEmpty() && "help".equals(options.command.get(0))) {
+            AgentClient.printUsage(System.out);
+            return 0;
+        }
         AgentPaths paths = AgentPaths.forProject(options.resolvedProject());
         paths.createDirectories();
         if (isExistingDaemonAlive(paths)) {
