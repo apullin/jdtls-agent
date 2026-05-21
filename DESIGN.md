@@ -33,6 +33,8 @@ jdtls --jvm-arg=-Duser.home=.jdtls-agent/homes/<project-key> -configuration .jdt
 
 The workspace, Eclipse configuration, cache, and effective home directories are intentionally outside hack80 source. The daemon sends `initialize`, `initialized`, and `workspace/didChangeConfiguration` with source roots and a Java 21 runtime. For hack80, JDTLS creates an invisible Eclipse project from `java/src` and `java/test`.
 
+`jdtls-agent` treats JDTLS as an external runtime dependency, not a vendored submodule. The wrapper is intentionally thin so upgrades can follow upstream JDTLS releases instead of carrying a fork.
+
 ## Symbol resolution
 
 LSP references, definitions, and call hierarchy are position-based. Agents usually know names. `SourceIndex` bridges that gap:
@@ -68,3 +70,7 @@ The current shape leaves room for:
 - dry-run `rename`
 - `organize-imports`
 - file-scoped `format`
+
+## Agent packaging
+
+The repository ships `skill/jdtls-agent/SKILL.md` so other agent harnesses can adopt a consistent operating model without reverse-engineering the README.

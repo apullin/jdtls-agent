@@ -1,3 +1,4 @@
 target/
 .jdtls-agent/
 .smoke-hack80
+JDTLS_USAGE_NOTES.md
