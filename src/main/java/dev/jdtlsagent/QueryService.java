@@ -6,6 +6,7 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -367,14 +368,17 @@ final class QueryService {
     private JsonObject diagnostics(JsonObject request) throws Exception {
         String fileOption = optionString(request, "file", null);
         Path file = null;
+        DiagnosticsSnapshot snapshot;
         if (fileOption != null && !fileOption.isBlank()) {
             file = paths.project.resolve(fileOption).toAbsolutePath().normalize();
             jdtls.didOpen(file);
-            Thread.sleep(750L);
+            openPackageCompanions(file);
+            snapshot = waitForStableDiagnostics(file);
+        } else {
+            snapshot = diagnosticsSnapshot(null);
         }
         boolean errorsOnly = optionBool(request, "errorsOnly", false);
-        boolean diagnosticsPublished = jdtls.diagnosticsPublished(file);
-        JsonArray raw = jdtls.diagnostics(file);
+        JsonArray raw = snapshot.diagnostics();
         JsonArray results = Jsons.array();
         for (JsonElement element : raw) {
             JsonObject diagnostic = element.getAsJsonObject();
@@ -402,15 +406,63 @@ final class QueryService {
         }
         JsonObject object = ok("diagnostics");
         object.add("results", results);
-        Jsons.add(object, "diagnosticsPublished", diagnosticsPublished);
-        Jsons.add(object, "diagnosticsAvailable", diagnosticsPublished);
-        if (!diagnosticsPublished) {
-            Jsons.add(object, "message", "JDTLS has not published diagnostics for this scope yet; use --file or retry after indexing settles.");
+        Jsons.add(object, "diagnosticsPublished", snapshot.published());
+        Jsons.add(object, "diagnosticsAvailable", snapshot.published());
+        if (!snapshot.published()) {
+            Jsons.add(object, "message", "JDTLS has not published stable diagnostics for this scope yet; use --file or retry after indexing settles.");
         } else if (results.size() == 0) {
             Jsons.add(object, "message", errorsOnly ? "No error diagnostics are currently published." : "No diagnostics are currently published.");
         }
         return object;
     }
+    private DiagnosticsSnapshot waitForStableDiagnostics(Path file) throws Exception {
+        DiagnosticsSnapshot current = diagnosticsSnapshot(file);
+        String currentKey = snapshotKey(current);
+        int stableReads = current.published() ? 1 : 0;
+        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(4).toNanos();
+        while (System.nanoTime() < deadlineNanos) {
+            if (stableReads >= 3) {
+                return current;
+            }
+            Thread.sleep(250L);
+            DiagnosticsSnapshot next = diagnosticsSnapshot(file);
+            String nextKey = snapshotKey(next);
+            if (next.published() && nextKey.equals(currentKey)) {
+                current = next;
+                stableReads++;
+                continue;
+            }
+            current = next;
+            currentKey = nextKey;
+            stableReads = next.published() ? 1 : 0;
+        }
+        return current;
+    }
+
+    private void openPackageCompanions(Path file) throws Exception {
+        Path parent = file.getParent();
+        if (parent == null || !Files.isDirectory(parent)) {
+            return;
+        }
+        try (java.util.stream.Stream<Path> stream = Files.list(parent)) {
+            for (Path candidate : stream
+                    .filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .filter(path -> !path.equals(file))
+                    .sorted()
+                    .toList()) {
+                jdtls.didOpen(candidate.toAbsolutePath().normalize());
+            }
+        }
+    }
+
+    private DiagnosticsSnapshot diagnosticsSnapshot(Path file) {
+        return new DiagnosticsSnapshot(jdtls.diagnosticsPublished(file), jdtls.diagnostics(file));
+    }
+
+    private static String snapshotKey(DiagnosticsSnapshot snapshot) {
+        return snapshot.published() ? Jsons.GSON.toJson(snapshot.diagnostics()) : "<unpublished>";
+    }
+
 
     private JsonObject batch(JsonObject request) {
         JsonArray commands = request.getAsJsonArray("commands");
@@ -701,6 +753,9 @@ final class QueryService {
         JsonObject options = request.has("options") && request.get("options").isJsonObject() ? request.getAsJsonObject("options") : Jsons.object();
         Jsons.add(options, name, value);
         request.add("options", options);
+    }
+
+    private record DiagnosticsSnapshot(boolean published, JsonArray diagnostics) {
     }
 
     private static String severityName(int severity) {
