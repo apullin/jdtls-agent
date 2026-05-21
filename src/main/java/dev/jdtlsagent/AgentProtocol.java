@@ -68,6 +68,7 @@ final class AgentProtocol {
             return rpc.deepCopy();
         }
         String command = normalizeMethod(Jsons.string(rpc, "method", ""));
+        // Accept JSON-RPC for agents while keeping the older CLI command envelope internal.
         JsonElement paramsElement = rpc.get("params");
         JsonObject params = paramsElement != null && paramsElement.isJsonObject() ? paramsElement.getAsJsonObject() : Jsons.object();
         JsonArray paramArray = paramsElement != null && paramsElement.isJsonArray() ? paramsElement.getAsJsonArray() : null;
@@ -135,6 +136,7 @@ final class AgentProtocol {
         copyOption(params, options, "includeDeclaration");
         copyOption(params, options, "errorsOnly");
         copyOption(params, options, "limit");
+        copyOption(params, options, "callSiteLimit");
         copyOption(params, options, "sourceRoot");
         copyOption(params, options, "testSourceRoot");
         copyOption(params, options, "file");
@@ -160,7 +162,7 @@ final class AgentProtocol {
             normalized = normalized.substring("jdtls-agent/".length());
         }
         return switch (normalized) {
-            case "status", "symbol", "definition", "references", "callers", "callees", "diagnostics", "field-writes", "api-surface", "batch" -> normalized;
+            case "status", "symbol", "definition", "references", "callers", "callees", "diagnostics", "field-writes", "api-surface", "mutation-map", "refresh-index", "batch" -> normalized;
             default -> throw new ProtocolException(-32601, "method-not-found", "Unknown method: " + method);
         };
     }

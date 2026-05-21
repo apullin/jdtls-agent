@@ -41,7 +41,8 @@ import java.util.stream.Stream;
 final class SourceIndex {
     private final Path project;
     private final List<String> sourceRoots;
-    private final List<Path> files;
+    private List<Path> files;
+    private final Map<Path, FileFingerprint> fingerprints = new HashMap<>();
     private final Map<Path, FileText> texts = new HashMap<>();
     private final List<SourceSymbol> symbols = new ArrayList<>();
     private final Map<String, List<SourceSymbol>> byQualifiedName = new HashMap<>();
@@ -50,7 +51,7 @@ final class SourceIndex {
     private SourceIndex(Path project, List<String> sourceRoots, List<Path> files) {
         this.project = project;
         this.sourceRoots = List.copyOf(sourceRoots);
-        this.files = List.copyOf(files);
+        this.files = new ArrayList<>(files);
     }
 
     static SourceIndex build(Path project, String sourceRoot, String testSourceRoot) throws IOException {
@@ -59,6 +60,14 @@ final class SourceIndex {
         if (testSourceRoot != null && !testSourceRoot.isBlank()) {
             roots.add(testSourceRoot);
         }
+        Path normalizedProject = project.toAbsolutePath().normalize();
+        List<Path> files = discoverFiles(normalizedProject, roots);
+        SourceIndex index = new SourceIndex(normalizedProject, roots, files);
+        index.parseAll();
+        return index;
+    }
+
+    private static List<Path> discoverFiles(Path project, List<String> roots) throws IOException {
         List<Path> files = new ArrayList<>();
         for (String root : roots) {
             Path dir = project.resolve(root).normalize();
@@ -71,9 +80,7 @@ final class SourceIndex {
                         .forEach(path -> files.add(path.toAbsolutePath().normalize()));
             }
         }
-        SourceIndex index = new SourceIndex(project.toAbsolutePath().normalize(), roots, files);
-        index.parseAll();
-        return index;
+        return files;
     }
 
     int sourceFileCount() {
@@ -119,6 +126,29 @@ final class SourceIndex {
                 continue;
             }
             if (!symbol.modifiers().contains("public") && !symbol.modifiers().contains("static")) {
+                continue;
+            }
+            result.add(symbol);
+        }
+        result.sort(Comparator
+                .comparing(SourceSymbol::qualifiedName)
+                .thenComparingInt(SourceSymbol::line));
+        if (result.size() > limit) {
+            return List.copyOf(result.subList(0, limit));
+        }
+        return List.copyOf(result);
+    }
+
+    List<SourceSymbol> fieldsInScope(String query, boolean includeTests, int limit) {
+        List<SourceSymbol> result = new ArrayList<>();
+        for (SourceSymbol symbol : symbols) {
+            if (!"field".equals(symbol.kind())) {
+                continue;
+            }
+            if (!includeTests && isTestFile(symbol.file())) {
+                continue;
+            }
+            if (!symbol.owner().equals(query) && !symbol.owner().startsWith(query + ".")) {
                 continue;
             }
             result.add(symbol);
@@ -215,6 +245,7 @@ final class SourceIndex {
     }
 
     boolean isWriteReference(Path file, int offset) {
+        // JDTLS gives exact field references; this parser only classifies write context.
         if (offset < 0) {
             return false;
         }
@@ -265,10 +296,32 @@ final class SourceIndex {
     }
 
     private void parseAll() {
+        rebuild(files);
+    }
+
+    RefreshResult refreshIfChanged() throws IOException {
+        // Rebuild only when the source set or file fingerprints changed since startup.
+        List<Path> discovered = discoverFiles(project, sourceRoots);
+        Map<Path, FileFingerprint> current = fingerprintsFor(discovered);
+        if (files.equals(discovered) && fingerprints.equals(current)) {
+            return new RefreshResult(false, files.size(), symbols.size());
+        }
+        rebuild(discovered);
+        return new RefreshResult(true, files.size(), symbols.size());
+    }
+
+    private void rebuild(List<Path> discovered) {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         if (compiler == null) {
             throw new IllegalStateException("No system Java compiler is available; run jdtls-agent with a JDK, not a JRE");
         }
+        files = new ArrayList<>(discovered);
+        texts.clear();
+        symbols.clear();
+        byQualifiedName.clear();
+        methodsByFile.clear();
+        fingerprints.clear();
+        fingerprints.putAll(fingerprintsFor(files));
         for (Path file : files) {
             try {
                 parseFile(compiler, file);
@@ -282,6 +335,17 @@ final class SourceIndex {
                 methodsByFile.computeIfAbsent(symbol.file(), ignored -> new ArrayList<>()).add(symbol);
             }
         }
+    }
+
+    private static Map<Path, FileFingerprint> fingerprintsFor(List<Path> files) {
+        Map<Path, FileFingerprint> result = new HashMap<>();
+        for (Path file : files) {
+            try {
+                result.put(file, FileFingerprint.of(file));
+            } catch (IOException ignored) {
+            }
+        }
+        return result;
     }
 
     private void parseFile(JavaCompiler compiler, Path file) throws IOException {
@@ -564,6 +628,22 @@ final class SourceIndex {
             }
             params.add(body.substring(start).trim());
             return new ParsedQuery(base, List.copyOf(params));
+        }
+    }
+
+    record RefreshResult(boolean changed, int sourceFiles, int symbols) {
+        JsonObject toJson() {
+            JsonObject object = Jsons.object();
+            Jsons.add(object, "changed", changed);
+            Jsons.add(object, "sourceFiles", sourceFiles);
+            Jsons.add(object, "symbols", symbols);
+            return object;
+        }
+    }
+
+    private record FileFingerprint(long size, long modifiedMillis) {
+        static FileFingerprint of(Path path) throws IOException {
+            return new FileFingerprint(Files.size(path), Files.getLastModifiedTime(path).toMillis());
         }
     }
 

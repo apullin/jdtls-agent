@@ -57,6 +57,7 @@ final class AgentDaemon {
     }
 
     static int cleanupRun(String[] args) {
+        // External cleanup is intentionally idempotent for stale wrapper/harness exits.
         AgentOptions options = AgentOptions.parse(args);
         AgentPaths paths = AgentPaths.forProject(options.resolvedProject());
         killPidFile(paths.jdtlsPidFile);

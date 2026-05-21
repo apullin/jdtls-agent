@@ -42,6 +42,8 @@ The daemon:
 ./scripts/jdtls-agent --project /Users/andrewpullin/personal/nethack/hack80 diagnostics --errors-only --file java/src/org/hack80/engine/movement/AppliedTools.java
 ./scripts/jdtls-agent --project /Users/andrewpullin/personal/nethack/hack80 field-writes org.hack80.engine.Obj.where --limit 10
 ./scripts/jdtls-agent --project /Users/andrewpullin/personal/nethack/hack80 api-surface org.hack80.engine.movement.AppliedTools --limit 10
+./scripts/jdtls-agent --project /Users/andrewpullin/personal/nethack/hack80 mutation-map org.hack80.engine --limit 10 --call-site-limit 5
+./scripts/jdtls-agent --project /Users/andrewpullin/personal/nethack/hack80 refresh-index
 ```
 
 Batch files contain one command per line:
@@ -87,7 +89,7 @@ Example response shape:
 {"jsonrpc":"2.0","id":1,"result":{"ok":true,"command":"references","results":[...]}}
 ```
 
-Named params use `query`, `symbol`, or `name` for the first command argument. Options can be supplied either directly in `params` (`limit`, `includeTests`, `includeDeclaration`, `errorsOnly`, `file`, `full`) or under `params.options`. Default `--limit` is 50; raise it deliberately for broad queries.
+Named params use `query`, `symbol`, or `name` for the first command argument. Options can be supplied either directly in `params` (`limit`, `callSiteLimit`, `includeTests`, `includeDeclaration`, `errorsOnly`, `file`, `full`) or under `params.options`. Default `--limit` is 50; raise it deliberately for broad queries.
 
 The daemon's loopback TCP protocol accepts the same JSON-RPC lines directly; the port is stored in `.jdtls-agent/run/<project-key>.port`.
 
@@ -103,6 +105,8 @@ The daemon's loopback TCP protocol accepts the same JSON-RPC lines directly; the
 - `diagnostics` returns currently published JDTLS diagnostics and reports whether diagnostics have actually been published for the requested scope. Use `--file <path>` to open/reconcile a file first.
 - `field-writes <field-symbol>` uses semantic JDTLS references and AST context to report assignment, compound-assignment, and increment/decrement writes to a field.
 - `api-surface <package-or-class>` lists public/static methods in a scope and groups semantic references by caller.
+- `mutation-map <package-or-class>` lists fields owned by a scope that are written from outside that scope, with sampled write sites.
+- `refresh-index` checks source fingerprints and rebuilds the local declaration index if files changed.
 - `batch <file>` sends many commands through the warm daemon; `--jsonl` prints one response object per line.
 - `rpc` keeps one client process connected to the daemon and translates newline-delimited JSON-RPC on stdin/stdout; `rpc '<json>'` sends one JSON-RPC request.
 
@@ -111,6 +115,7 @@ Common options:
 - `--json`
 - `--jsonl`
 - `--limit N`
+- `--call-site-limit N`
 - `--include-tests` / `--exclude-tests`
 - `--include-declaration`
 - `--source-root java/src`
@@ -147,5 +152,5 @@ This version does not mutate hack80 source. JDTLS `workspace/applyEdit` requests
 - Hack80 is a plain Makefile Java project, so JDTLS creates an invisible project model from source roots. This works for the smoke queries, but project-model edge cases may appear.
 - Diagnostics are push-based; `diagnostics --file <path>` is more reliable than project-wide diagnostics immediately after startup.
 - Call hierarchy is JDTLS/JDT based. Dynamic dispatch, generated content, or unusual translated code can still need human interpretation.
-- The local declaration index uses the JDK compiler parser only for mapping symbol strings to source positions; semantic answers come from JDTLS.
-- `field-writes` is semantically scoped by JDTLS references, then syntactically classifies write context; unusual reflection or generated code still needs review.
+- The local declaration index uses the JDK compiler parser for mapping symbol strings to source positions and for classifying field-write context; semantic answers come from JDTLS.
+- `field-writes` and `mutation-map` are semantically scoped by JDTLS references, then syntactically classify write context; unusual reflection or generated code still needs review.

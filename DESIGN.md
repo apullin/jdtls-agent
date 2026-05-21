@@ -48,7 +48,7 @@ Declaration-position lookup uses this local parser. References/callers/callees r
 
 ## Caching
 
-The first version keeps the declaration index in daemon memory. It is rebuilt when the daemon starts. A future version should add source fingerprinting and incremental refresh after file-change notifications.
+The declaration index is kept in daemon memory and guarded by source file fingerprints. Each request checks whether the source set or fingerprint map changed and rebuilds the index when needed; `refresh-index` exposes that refresh explicitly for callers.
 
 ## Safety
 
@@ -57,13 +57,14 @@ The daemon is read-only. If JDTLS asks the client to apply workspace edits, the 
 ## Implemented supplements
 
 - `field-writes` combines semantic JDTLS references with local AST write-context classification.
+- `mutation-map` uses `field-writes` to report externally-owned writes into a class/package scope.
 - `api-surface` lists public/static methods under a class/package scope and groups semantic references by enclosing caller.
+- caller/callee output stores true `callSiteCount` while truncating displayed `callSites` to `callSiteLimit`.
 
 ## Future commands
 
 The current shape leaves room for:
 
-- `mutation-map`
 - dry-run `rename`
 - `organize-imports`
 - file-scoped `format`

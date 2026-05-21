@@ -79,6 +79,8 @@ final class AgentClient {
         out.println("  diagnostics [--errors-only] [--file <relative-or-absolute-java-file>]");
         out.println("  field-writes <field-symbol> [--exclude-tests]");
         out.println("  api-surface <package-or-class> [--limit N] [--exclude-tests]");
+        out.println("  mutation-map <package-or-class> [--limit N] [--call-site-limit N]");
+        out.println("  refresh-index");
         out.println("  batch <file> [--jsonl]");
         out.println("  rpc [json-request]    # persistent stdin/stdout JSON-RPC bridge, or one-shot request");
     }
@@ -124,6 +126,7 @@ final class AgentClient {
         clone.includeDeclaration = options.includeDeclaration;
         clone.errorsOnly = options.errorsOnly;
         clone.limit = options.limit;
+        clone.callSiteLimit = options.callSiteLimit;
         clone.sourceRoot = options.sourceRoot;
         clone.testSourceRoot = options.testSourceRoot;
         clone.file = options.file;
@@ -144,6 +147,7 @@ final class AgentClient {
                 case "--errors-only" -> options.errorsOnly = true;
                 case "--full" -> options.full = true;
                 case "--limit" -> options.limit = Integer.parseInt(requireTokenValue(tokens, ++i, token));
+                case "--call-site-limit" -> options.callSiteLimit = Integer.parseInt(requireTokenValue(tokens, ++i, token));
                 case "--source-root" -> options.sourceRoot = requireTokenValue(tokens, ++i, token);
                 case "--test-source-root" -> options.testSourceRoot = requireTokenValue(tokens, ++i, token);
                 case "--file" -> options.file = requireTokenValue(tokens, ++i, token);
@@ -173,6 +177,7 @@ final class AgentClient {
         Jsons.add(opts, "includeDeclaration", options.includeDeclaration);
         Jsons.add(opts, "errorsOnly", options.errorsOnly);
         Jsons.add(opts, "limit", options.limit);
+        Jsons.add(opts, "callSiteLimit", options.callSiteLimit);
         Jsons.add(opts, "sourceRoot", options.sourceRoot);
         Jsons.add(opts, "testSourceRoot", options.testSourceRoot);
         Jsons.add(opts, "file", options.file);
@@ -183,12 +188,12 @@ final class AgentClient {
 
     private static void requireArgs(String command, List<String> args) {
         switch (command) {
-            case "symbol", "definition", "references", "callers", "callees", "field-writes", "api-surface" -> {
+            case "symbol", "definition", "references", "callers", "callees", "field-writes", "api-surface", "mutation-map" -> {
                 if (args.isEmpty()) {
                     throw new IllegalArgumentException(command + " requires a symbol/query argument");
                 }
             }
-            case "status", "diagnostics", "batch" -> {
+            case "status", "diagnostics", "batch", "refresh-index" -> {
             }
             default -> throw new IllegalArgumentException("unknown command: " + command);
         }
@@ -311,8 +316,9 @@ final class AgentClient {
             case "references", "field-writes" -> printReferences(response);
             case "callers", "callees" -> printCalls(response);
             case "api-surface" -> printApiSurface(response);
+            case "mutation-map" -> printMutationMap(response);
             case "diagnostics" -> printDiagnostics(response);
-            case "batch" -> System.out.println(Jsons.PRETTY_GSON.toJson(response));
+            case "batch", "refresh-index" -> System.out.println(Jsons.PRETTY_GSON.toJson(response));
             default -> System.out.println(Jsons.PRETTY_GSON.toJson(response));
         }
     }
@@ -389,6 +395,10 @@ final class AgentClient {
                 JsonObject site = siteElement.getAsJsonObject();
                 System.out.println("  " + Jsons.string(site, "file", "") + ":" + Jsons.integer(site, "line", 0) + ": " + Jsons.string(site, "preview", ""));
             }
+            int callSiteCount = Jsons.integer(call, "callSiteCount", sites.size());
+            if (callSiteCount > sites.size() || Jsons.bool(call, "callSitesTruncated", false)) {
+                System.out.println("  ... " + (callSiteCount - sites.size()) + " more call sites");
+            }
         }
         if (results.size() == 0) {
             System.out.println("no call hierarchy results found");
@@ -416,6 +426,28 @@ final class AgentClient {
         }
         if (results.size() == 0) {
             System.out.println("no API surface methods found");
+        }
+    }
+
+    private static void printMutationMap(JsonObject response) {
+        JsonArray results = response.getAsJsonArray("results");
+        for (JsonElement element : results) {
+            JsonObject item = element.getAsJsonObject();
+            JsonObject field = item.getAsJsonObject("field");
+            System.out.println(Jsons.string(field, "qualifiedName", "") + " externalWrites="
+                    + Jsons.integer(item, "externalWriteCount", 0));
+            JsonArray writes = item.has("externalWrites") ? item.getAsJsonArray("externalWrites") : Jsons.array();
+            for (JsonElement writeElement : writes) {
+                JsonObject write = writeElement.getAsJsonObject();
+                System.out.println("  " + Jsons.string(write, "file", "") + ":" + Jsons.integer(write, "line", 0)
+                        + ": " + Jsons.string(write, "preview", ""));
+            }
+            if (Jsons.bool(item, "externalWritesTruncated", false)) {
+                System.out.println("  ... truncated");
+            }
+        }
+        if (results.size() == 0) {
+            System.out.println("no external field writes found");
         }
     }
 

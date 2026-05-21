@@ -73,6 +73,7 @@ final class JdtlsClient implements AutoCloseable {
         Path stderrLog = paths.logDir.resolve(paths.projectKey + ".jdtls.stderr.log");
         Path agentLog = paths.logDir.resolve(paths.projectKey + ".agent.log");
         List<String> command = List.of(
+        // Keep Eclipse workspace/config/home/cache state project-local and disposable.
                 jdtls,
                 "--jvm-arg=-Duser.home=" + paths.homeDir,
                 "--jvm-arg=-Dosgi.configuration.area=" + paths.configurationDir.toUri(),
@@ -570,6 +571,7 @@ final class JdtlsClient implements AutoCloseable {
         } catch (Exception ignored) {
         }
         destroyProcessTree(false);
+        // JDTLS can spawn a JVM child; tear down the whole process tree on exit.
         try {
             process.waitFor(3, TimeUnit.SECONDS);
         } catch (InterruptedException e) {

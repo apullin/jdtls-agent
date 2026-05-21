@@ -116,6 +116,53 @@ final class SourceIndexTest {
         assertFalse(index.isWriteReference(file, index.offset(file, 8, 26)));
     }
 
+    @Test
+    void refreshesIndexAfterSourceChanges() throws Exception {
+        write("java/src/toy/Foo.java", """
+                package toy;
+                final class Foo {
+                    static void before() {}
+                }
+                """);
+        SourceIndex index = SourceIndex.build(project, "java/src", "java/test");
+        assertTrue(index.resolve("toy.Foo.before", true).ok());
+
+        Thread.sleep(5L);
+        write("java/src/toy/Foo.java", """
+                package toy;
+                final class Foo {
+                    static void after() {}
+                }
+                """);
+
+        SourceIndex.RefreshResult refresh = index.refreshIfChanged();
+        assertTrue(refresh.changed());
+        assertFalse(index.resolve("toy.Foo.before", true).ok());
+        assertTrue(index.resolve("toy.Foo.after", true).ok());
+    }
+
+    @Test
+    void listsFieldsInScope() throws Exception {
+        write("java/src/toy/Foo.java", """
+                package toy;
+                final class Foo {
+                    int a;
+                    static int b;
+                }
+                """);
+        write("java/src/toy/Bar.java", """
+                package toy;
+                final class Bar {
+                    int c;
+                }
+                """);
+        SourceIndex index = SourceIndex.build(project, "java/src", "java/test");
+
+        assertEquals(2, index.fieldsInScope("toy.Foo", true, 10).size());
+        assertEquals(3, index.fieldsInScope("toy", true, 10).size());
+    }
+
+
 
     private void write(String relative, String content) throws Exception {
         Path file = project.resolve(relative);

@@ -28,10 +28,12 @@ final class QueryService {
         this.jdtls = jdtls;
     }
 
-    JsonObject execute(JsonObject request) {
+    synchronized JsonObject execute(JsonObject request) {
         long start = System.nanoTime();
         String command = Jsons.string(request, "command", "");
+        SourceIndex.RefreshResult refreshResult = null;
         try {
+            refreshResult = sourceIndex.refreshIfChanged();
             JsonObject result = switch (command) {
                 case "status" -> status();
                 case "symbol" -> symbol(request);
@@ -42,10 +44,15 @@ final class QueryService {
                 case "diagnostics" -> diagnostics(request);
                 case "field-writes" -> fieldWrites(request);
                 case "api-surface" -> apiSurface(request);
+                case "mutation-map" -> mutationMap(request);
+                case "refresh-index" -> refreshIndex(refreshResult);
                 case "batch" -> batch(request);
                 default -> error("unknown-command", "Unknown command: " + command);
             };
             Jsons.add(result, "timingMs", (System.nanoTime() - start) / 1_000_000L);
+            if (refreshResult != null && refreshResult.changed()) {
+                result.add("sourceIndexRefresh", refreshResult.toJson());
+            }
             return result;
         } catch (Exception e) {
             JsonObject error = error("command-failed", e.getMessage() == null ? e.toString() : e.getMessage());
@@ -130,6 +137,7 @@ final class QueryService {
         String query = firstArg(request);
         boolean includeTests = optionBool(request, "includeTests", true);
         int limit = optionInt(request, "limit", daemonOptions.limit);
+        int callSiteLimit = optionInt(request, "callSiteLimit", daemonOptions.callSiteLimit);
         SourceIndex.ResolveResult resolved = sourceIndex.resolve(query, includeTests);
         if (!resolved.ok()) {
             JsonObject error = resolved.toErrorJson();
@@ -145,14 +153,14 @@ final class QueryService {
             JsonObject params = Jsons.object();
             params.add("item", callHierarchy.get(0));
             JsonElement incoming = jdtls.request("callHierarchy/incomingCalls", params, Duration.ofSeconds(30));
-            results = incomingCallsToJson(incoming, includeTests, limit);
+            results = incomingCallsToJson(incoming, includeTests, limit, callSiteLimit);
         }
         if (results.size() == 0) {
             fallback = "references-grouped-by-enclosing-method";
             JsonObject refRequest = request.deepCopy();
             setOption(refRequest, "includeDeclaration", false);
             JsonObject refs = references(refRequest);
-            results = groupReferencesByCaller(refs.getAsJsonArray("results"), limit);
+            results = groupReferencesByCaller(refs.getAsJsonArray("results"), limit, callSiteLimit);
         }
         JsonObject object = ok("callers");
         Jsons.add(object, "query", query);
@@ -168,6 +176,7 @@ final class QueryService {
         String query = firstArg(request);
         boolean includeTests = optionBool(request, "includeTests", true);
         int limit = optionInt(request, "limit", daemonOptions.limit);
+        int callSiteLimit = optionInt(request, "callSiteLimit", daemonOptions.callSiteLimit);
         SourceIndex.ResolveResult resolved = sourceIndex.resolve(query, includeTests);
         if (!resolved.ok()) {
             JsonObject error = resolved.toErrorJson();
@@ -182,7 +191,7 @@ final class QueryService {
             JsonObject params = Jsons.object();
             params.add("item", callHierarchy.get(0));
             JsonElement outgoing = jdtls.request("callHierarchy/outgoingCalls", params, Duration.ofSeconds(30));
-            results = outgoingCallsToJson(outgoing, symbol.file().toUri().toString(), includeTests, limit);
+            results = outgoingCallsToJson(outgoing, symbol.file().toUri().toString(), includeTests, limit, callSiteLimit);
         }
         JsonObject object = ok("callees");
         Jsons.add(object, "query", query);
@@ -208,6 +217,15 @@ final class QueryService {
         if (!"field".equals(symbol.kind())) {
             return error("not-a-field", "field-writes requires a field symbol, got " + symbol.kind() + ": " + symbol.displayName());
         }
+        JsonArray writes = fieldWriteResults(symbol, includeTests, limit);
+        JsonObject object = ok("field-writes");
+        Jsons.add(object, "query", query);
+        object.add("resolvedSymbol", symbol.toJson());
+        object.add("results", writes);
+        return object;
+    }
+
+    private JsonArray fieldWriteResults(SourceSymbol symbol, boolean includeTests, int limit) throws Exception {
         JsonArray references = referenceResultsForSymbol(symbol, includeTests, false, Integer.MAX_VALUE, "field-write");
         JsonArray writes = Jsons.array();
         for (JsonElement element : references) {
@@ -223,11 +241,7 @@ final class QueryService {
                 writes.add(reference);
             }
         }
-        JsonObject object = ok("field-writes");
-        Jsons.add(object, "query", query);
-        object.add("resolvedSymbol", symbol.toJson());
-        object.add("results", writes);
-        return object;
+        return writes;
     }
 
     private JsonObject apiSurface(JsonObject request) throws Exception {
@@ -258,7 +272,7 @@ final class QueryService {
         for (SourceSymbol method : methods) {
             JsonObject item = method.toJson();
             JsonArray references = referenceResultsForSymbol(method, includeTests, false, daemonOptions.limit, "reference");
-            JsonArray callers = groupReferencesByCaller(references, daemonOptions.limit);
+            JsonArray callers = groupReferencesByCaller(references, daemonOptions.limit, daemonOptions.callSiteLimit);
             item.add("callers", callers);
             Jsons.add(item, "callerCount", callers.size());
             results.add(item);
@@ -268,6 +282,86 @@ final class QueryService {
         Jsons.add(object, "resolvedScope", scope);
         object.add("results", results);
         return object;
+    }
+
+    private JsonObject mutationMap(JsonObject request) throws Exception {
+        // Map fields owned by a scope to writes made by callers outside that scope.
+        String query = firstArg(request);
+        boolean includeTests = optionBool(request, "includeTests", true);
+        int fieldLimit = optionInt(request, "limit", daemonOptions.limit);
+        int writeLimit = optionInt(request, "callSiteLimit", daemonOptions.callSiteLimit);
+        String scope = query;
+        SourceIndex.ResolveResult scopeResolve = sourceIndex.resolve(query, includeTests);
+        if (scopeResolve.ok()) {
+            if (!"class".equals(scopeResolve.symbol().kind())) {
+                return error("not-a-class-or-package", "mutation-map requires a class or package scope, got "
+                        + scopeResolve.symbol().kind() + ": " + scopeResolve.symbol().displayName());
+            }
+            scope = scopeResolve.symbol().qualifiedName();
+        } else if ("ambiguous-symbol".equals(scopeResolve.error())) {
+            List<SourceSymbol> classCandidates = scopeResolve.candidates().stream()
+                    .filter(candidate -> "class".equals(candidate.kind()))
+                    .toList();
+            if (classCandidates.size() == 1) {
+                scope = classCandidates.get(0).qualifiedName();
+            } else {
+                JsonObject error = scopeResolve.toErrorJson();
+                Jsons.add(error, "command", "mutation-map");
+                return error;
+            }
+        }
+
+        JsonArray results = Jsons.array();
+        List<SourceSymbol> fields = sourceIndex.fieldsInScope(scope, includeTests, fieldLimit);
+        for (SourceSymbol field : fields) {
+            JsonArray writes = fieldWriteResults(field, includeTests, Integer.MAX_VALUE);
+            JsonArray externalWrites = Jsons.array();
+            int externalWriteCount = 0;
+            for (JsonElement element : writes) {
+                JsonObject write = element.getAsJsonObject();
+                String enclosing = Jsons.string(write, "enclosingSymbol", "");
+                if (isInternalToScope(enclosing, scope)) {
+                    continue;
+                }
+                externalWriteCount++;
+                if (externalWrites.size() < writeLimit) {
+                    externalWrites.add(write.deepCopy());
+                }
+            }
+            if (externalWriteCount == 0) {
+                continue;
+            }
+            JsonObject item = Jsons.object();
+            item.add("field", field.toJson());
+            Jsons.add(item, "externalWriteCount", externalWriteCount);
+            if (externalWriteCount > externalWrites.size()) {
+                Jsons.add(item, "externalWritesTruncated", true);
+            }
+            item.add("externalWrites", externalWrites);
+            results.add(item);
+        }
+
+        JsonObject object = ok("mutation-map");
+        Jsons.add(object, "query", query);
+        Jsons.add(object, "resolvedScope", scope);
+        Jsons.add(object, "fieldsConsidered", fields.size());
+        object.add("results", results);
+        return object;
+    }
+
+    private JsonObject refreshIndex(SourceIndex.RefreshResult refreshResult) {
+        JsonObject object = ok("refresh-index");
+        if (refreshResult != null) {
+            object.add("sourceIndex", refreshResult.toJson());
+        }
+        return object;
+    }
+
+    private static boolean isInternalToScope(String enclosingSymbol, String scope) {
+        return enclosingSymbol != null
+                && !enclosingSymbol.isBlank()
+                && !"<unknown>".equals(enclosingSymbol)
+                && (enclosingSymbol.equals(scope) || enclosingSymbol.startsWith(scope + "."));
     }
 
     private JsonObject diagnostics(JsonObject request) throws Exception {
@@ -391,7 +485,7 @@ final class QueryService {
         return array;
     }
 
-    private JsonArray incomingCallsToJson(JsonElement response, boolean includeTests, int limit) {
+    private JsonArray incomingCallsToJson(JsonElement response, boolean includeTests, int limit, int callSiteLimit) {
         JsonArray array = Jsons.array();
         if (response == null || !response.isJsonArray()) {
             return array;
@@ -411,13 +505,7 @@ final class QueryService {
                 return object;
             });
             JsonArray sites = rangesJson(uri, call.getAsJsonArray("fromRanges"), "call-site");
-            JsonArray callSites = group.getAsJsonArray("callSites");
-            for (JsonElement site : sites) {
-                JsonObject siteObject = site.getAsJsonObject();
-                if (!hasCallSite(callSites, siteObject)) {
-                    callSites.add(siteObject);
-                }
-            }
+            addCallSites(group, sites, callSiteLimit);
             if (groups.size() >= limit) {
                 break;
             }
@@ -428,7 +516,7 @@ final class QueryService {
         return array;
     }
 
-    private JsonArray outgoingCallsToJson(JsonElement response, String callSiteUri, boolean includeTests, int limit) {
+    private JsonArray outgoingCallsToJson(JsonElement response, String callSiteUri, boolean includeTests, int limit, int callSiteLimit) {
         JsonArray array = Jsons.array();
         if (response == null || !response.isJsonArray()) {
             return array;
@@ -448,13 +536,7 @@ final class QueryService {
                 return object;
             });
             JsonArray sites = rangesJson(callSiteUri, call.getAsJsonArray("fromRanges"), "call-site");
-            JsonArray callSites = group.getAsJsonArray("callSites");
-            for (JsonElement site : sites) {
-                JsonObject siteObject = site.getAsJsonObject();
-                if (!hasCallSite(callSites, siteObject)) {
-                    callSites.add(siteObject);
-                }
-            }
+            addCallSites(group, sites, callSiteLimit);
             if (groups.size() >= limit) {
                 break;
             }
@@ -474,6 +556,30 @@ final class QueryService {
     private static String incomingCallItemKey(JsonObject object) {
         return Jsons.string(object, "file", "") + ":" + Jsons.string(object, "name", "") + ":"
                 + Jsons.string(object, "detail", "");
+    }
+
+    private static void addCallSites(JsonObject group, JsonArray sites, int callSiteLimit) {
+        // Keep hot-path human output bounded while preserving the true call-site count.
+        JsonArray callSites = group.getAsJsonArray("callSites");
+        int total = Jsons.integer(group, "callSiteCount", callSites.size());
+        for (JsonElement site : sites) {
+            JsonObject siteObject = site.getAsJsonObject();
+            if (!hasCallSite(callSites, siteObject)) {
+                total++;
+                if (callSites.size() < callSiteLimit) {
+                    callSites.add(siteObject);
+                } else {
+                    Jsons.add(group, "callSitesTruncated", true);
+                }
+            }
+        }
+        Jsons.add(group, "callSiteCount", total);
+    }
+
+    private static JsonArray singletonArray(JsonObject object) {
+        JsonArray array = Jsons.array();
+        array.add(object);
+        return array;
     }
 
     private static boolean hasCallSite(JsonArray callSites, JsonObject candidate) {
@@ -529,7 +635,7 @@ final class QueryService {
         return object;
     }
 
-    private JsonArray groupReferencesByCaller(JsonArray references, int limit) {
+    private JsonArray groupReferencesByCaller(JsonArray references, int limit, int callSiteLimit) {
         Map<String, JsonObject> groups = new LinkedHashMap<>();
         for (JsonElement element : references) {
             if (groups.size() >= limit) {
@@ -544,7 +650,7 @@ final class QueryService {
                 object.add("callSites", Jsons.array());
                 return object;
             });
-            group.getAsJsonArray("callSites").add(reference.deepCopy());
+            addCallSites(group, singletonArray(reference.deepCopy()), callSiteLimit);
         }
         JsonArray array = Jsons.array();
         for (JsonObject value : groups.values()) {

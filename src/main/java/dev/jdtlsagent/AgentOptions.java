@@ -9,6 +9,7 @@ final class AgentOptions {
     static final String DEFAULT_SOURCE_ROOT = "java/src";
     static final String DEFAULT_TEST_SOURCE_ROOT = "java/test";
     static final int DEFAULT_LIMIT = 50;
+    static final int DEFAULT_CALL_SITE_LIMIT = 10;
 
     Path project = DEFAULT_PROJECT;
     String jdtls;
@@ -19,6 +20,7 @@ final class AgentOptions {
     boolean includeDeclaration;
     boolean errorsOnly;
     int limit = DEFAULT_LIMIT;
+    int callSiteLimit = DEFAULT_CALL_SITE_LIMIT;
     String sourceRoot = DEFAULT_SOURCE_ROOT;
     String testSourceRoot = DEFAULT_TEST_SOURCE_ROOT;
     String file;
@@ -44,6 +46,7 @@ final class AgentOptions {
                 case "--include-declaration" -> options.includeDeclaration = true;
                 case "--errors-only" -> options.errorsOnly = true;
                 case "--limit" -> options.limit = Integer.parseInt(requireValue(args, ++i, arg));
+                case "--call-site-limit" -> options.callSiteLimit = Integer.parseInt(requireValue(args, ++i, arg));
                 case "--source-root" -> options.sourceRoot = requireValue(args, ++i, arg);
                 case "--test-source-root" -> options.testSourceRoot = requireValue(args, ++i, arg);
                 case "--file" -> options.file = requireValue(args, ++i, arg);

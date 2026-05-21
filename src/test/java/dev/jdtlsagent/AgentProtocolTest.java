@@ -33,6 +33,28 @@ final class AgentProtocolTest {
     }
 
     @Test
+    void translatesMutationMapCallSiteLimit() {
+        JsonObject rpc = JsonParser.parseString("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": 8,
+                  "method": "jdtlsAgent.mutation-map",
+                  "params": {
+                    "query": "toy",
+                    "limit": 4,
+                    "callSiteLimit": 2
+                  }
+                }
+                """).getAsJsonObject();
+
+        JsonObject request = AgentProtocol.toServiceRequest(rpc);
+
+        assertEquals("mutation-map", request.get("command").getAsString());
+        assertEquals("toy", request.getAsJsonArray("args").get(0).getAsString());
+        assertEquals(2, request.getAsJsonObject("options").get("callSiteLimit").getAsInt());
+    }
+
+    @Test
     void translatesJsonRpcPositionalParams() {
         JsonObject rpc = JsonParser.parseString("""
                 {

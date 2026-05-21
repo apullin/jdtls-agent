@@ -37,6 +37,8 @@ REQUESTS=$(cat <<'JSON'
 {"jsonrpc":"2.0","id":3,"method":"jdtlsAgent.references","params":{"query":"org.hack80.engine.movement.AppliedTools.buryAnObj","limit":3}}
 {"jsonrpc":"2.0","id":4,"method":"jdtlsAgent.field-writes","params":{"query":"org.hack80.engine.Obj.where","limit":5}}
 {"jsonrpc":"2.0","id":5,"method":"jdtlsAgent.api-surface","params":{"query":"org.hack80.engine.movement.AppliedTools","limit":3}}
+{"jsonrpc":"2.0","id":6,"method":"jdtlsAgent.mutation-map","params":{"query":"org.hack80.engine","limit":3,"callSiteLimit":2}}
+{"jsonrpc":"2.0","id":7,"method":"jdtlsAgent.refresh-index","params":{}}
 JSON
 )
 
@@ -44,7 +46,7 @@ RESPONSES="$(printf '%s\n' "$REQUESTS" | "$AGENT" --project "$PROJECT" rpc)"
 printf '%s\n' "$RESPONSES" | python3 -c '
 import json, sys
 responses = [json.loads(line) for line in sys.stdin if line.strip()]
-assert [r.get("id") for r in responses] == [1, 2, 3, 4, 5], responses
+assert [r.get("id") for r in responses] == [1, 2, 3, 4, 5, 6, 7], responses
 for response in responses:
     assert "result" in response and response["result"].get("ok") is True, response
 by_id = {r["id"]: r["result"] for r in responses}
@@ -53,6 +55,8 @@ assert by_id[2]["location"]["line"] == 825, by_id[2]
 assert len(by_id[3]["results"]) >= 1, by_id[3]
 assert "results" in by_id[4], by_id[4]
 assert len(by_id[5]["results"]) >= 1, by_id[5]
+assert "results" in by_id[6], by_id[6]
+assert "sourceIndex" in by_id[7], by_id[7]
 '
 
 echo "jdtls-agent JSON-RPC smoke passed for $PROJECT"
